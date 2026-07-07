@@ -3,17 +3,28 @@ import pool from "../config/db.js";
 let ready = null;
 export function ensureSchema() {
   if (!ready) {
-    ready = pool.query(`
-      CREATE TABLE IF NOT EXISTS "activity" (
-        "id"         BIGSERIAL PRIMARY KEY,
-        "user_id"    VARCHAR(64)  NOT NULL,
-        "type"       VARCHAR(64)  NOT NULL,
-        "created_at" TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ready = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "activity" (
+          "id"         BIGSERIAL PRIMARY KEY,
+          "user_id"    VARCHAR(64)  NOT NULL,
+          "type"       VARCHAR(64)  NOT NULL,
+          "created_at" TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS "activity_created_at_idx" ON "activity" ("created_at")`
       );
-      CREATE INDEX IF NOT EXISTS "activity_created_at_idx" ON "activity" ("created_at");
-      CREATE INDEX IF NOT EXISTS "activity_type_idx"       ON "activity" ("type");
-      CREATE INDEX IF NOT EXISTS "activity_user_id_idx"    ON "activity" ("user_id");
-    `);
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS "activity_type_idx" ON "activity" ("type")`
+      );
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS "activity_user_id_idx" ON "activity" ("user_id")`
+      );
+    })().catch((err) => {
+      ready = null; // let a later call retry
+      throw err;
+    });
   }
   return ready;
 }
@@ -27,14 +38,14 @@ function rowToActivity(r) {
   };
 }
 
-export async function listRecent(limit = 50) {
+export async function listRecent(limit = 50, offset = 0) {
   await ensureSchema();
   const { rows } = await pool.query(
     `SELECT id, user_id, type, created_at
        FROM "activity"
-      ORDER BY created_at DESC
-      LIMIT $1`,
-    [limit]
+      ORDER BY created_at DESC, id DESC
+      LIMIT $1 OFFSET $2`,
+    [limit, offset]
   );
   return rows.map(rowToActivity);
 }
@@ -73,6 +84,29 @@ export async function clearAll() {
   return true;
 }
 
+export async function updateOne(id, { user_id, type, created_at }) {
+  await ensureSchema();
+  const { rows } = await pool.query(
+    `UPDATE "activity"
+        SET user_id    = COALESCE($2, user_id),
+            type       = COALESCE($3, type),
+            created_at = COALESCE($4::timestamp, created_at)
+      WHERE id = $1
+      RETURNING id, user_id, type, created_at`,
+    [id, user_id ?? null, type ?? null, created_at ?? null]
+  );
+  return rows[0] ? rowToActivity(rows[0]) : null;
+}
+
+export async function deleteOne(id) {
+  await ensureSchema();
+  const { rowCount } = await pool.query(
+    `DELETE FROM "activity" WHERE id = $1`,
+    [id]
+  );
+  return rowCount > 0;
+}
+
 export async function count() {
   await ensureSchema();
   const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM "activity"`);
@@ -104,8 +138,8 @@ export async function summarize(days) {
   const { rows } = await pool.query(
     `SELECT id, user_id, type, created_at
        FROM "activity"
-      WHERE created_at >= $1 AND created_at < $2`,
-    [previousStart, endExclusive]
+      WHERE created_at >= $1::timestamp AND created_at < $2::timestamp`,
+    [previousStart.toISOString(), endExclusive.toISOString()]
   );
 
   const inCurrent = (t) => t >= startInclusive && t < endExclusive;

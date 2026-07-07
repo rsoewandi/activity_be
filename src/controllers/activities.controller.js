@@ -18,7 +18,8 @@ const ALLOWED_TYPES = new Set([
 export const list = async (req, res) => {
   try {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
-    res.json(await Activity.listRecent(limit));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    res.json(await Activity.listRecent(limit, offset));
   } catch (err) {
     fail(res, err);
   }
@@ -46,6 +47,43 @@ export const clear = async (_req, res) => {
   try {
     await Activity.clearAll();
     res.json({ message: "Cleared" });
+  } catch (err) {
+    fail(res, err);
+  }
+};
+
+export const update = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "invalid id" });
+    }
+    const { user_id, type, created_at } = req.body ?? {};
+    if (type != null && !ALLOWED_TYPES.has(type)) {
+      return res.status(400).json({
+        error: `type must be one of: ${[...ALLOWED_TYPES].join(", ")}`,
+      });
+    }
+    if (user_id != null && typeof user_id !== "string") {
+      return res.status(400).json({ error: "user_id must be string" });
+    }
+    const row = await Activity.updateOne(id, { user_id, type, created_at });
+    if (!row) return res.status(404).json({ error: "not found" });
+    res.json(row);
+  } catch (err) {
+    fail(res, err, 400, "Bad request");
+  }
+};
+
+export const remove = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "invalid id" });
+    }
+    const ok = await Activity.deleteOne(id);
+    if (!ok) return res.status(404).json({ error: "not found" });
+    res.json({ message: "Deleted", id });
   } catch (err) {
     fail(res, err);
   }
